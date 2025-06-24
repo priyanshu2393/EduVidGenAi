@@ -108,14 +108,6 @@ frontend/
 - **Supabase:** Set your Supabase credentials in the backend config/environment.
 - **Database:** Configure your SQL database for user/video metadata.
 
----
-
-## 📝 License
-
-MIT License
-
----
-
 ## 🙏 Acknowledgments
 
 - [Manim Community](https://www.manim.community/)
