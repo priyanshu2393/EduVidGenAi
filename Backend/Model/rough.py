@@ -1,25 +1,49 @@
-from langchain_google_genai import ChatGoogleGenerativeAI
-from pydantic import Field , BaseModel
-from typing import  TypedDict, Optional, Dict, List, Any
-import subprocess
-import textwrap 
-from langchain_core.prompts import PromptTemplate
-from langchain.schema.messages import SystemMessage, HumanMessage
-from langchain.prompts import ChatPromptTemplate, SystemMessagePromptTemplate, HumanMessagePromptTemplate
 from dotenv import load_dotenv
 import os
+import subprocess
+import time
+import glob
+from typing import Optional, List
+from pydantic import BaseModel, Field
+from langchain.prompts import ChatPromptTemplate
+from langchain.output_parsers import PydanticOutputParser
+from langchain_openai import ChatOpenAI
+
 
 load_dotenv()
 
-load_dotenv()
+# =============================== #
+#    Pydantic Output Models       #
+# =============================== #
 
 class ScenePlan(BaseModel):
-    scene : str = Field(description="Detailed plan for the animation")
-    scene_class_name : str = Field(description="Name of the scene class")
+    scene: str = Field(description="Detailed plan for the animation")
+    scene_class_name: str = Field(description="Name of the scene class")
 
-def plan_scene(prompt:str):
-    system_prompt = """
-        You are a manim expert and an excellent teacher who can explain complex
+
+class ManimCodeResponse(BaseModel):
+    code: str = Field(description="Complete valid Python code for the animation")
+    explanation: Optional[str] = Field(None, description="Explanation of the code")
+    error_fixes: Optional[List[str]] = Field(None, description="Error fixes if any")
+
+
+class ManimExecutionResponse(BaseModel):
+    output: str = Field(description="Output of the execution")
+    error: Optional[str] = Field(None, description="Error message")
+    video_path: Optional[str] = Field(None, description="Path of the file")
+
+
+class ManimErrorCorrectionResponse(BaseModel):
+    fixed_code: str = Field(..., description="The corrected Manim code")
+    explanation: str = Field(description="Explanation of what was fixed and why")
+    changes_made: List[str] = Field(description="List of specific changes made to fix the code")
+
+# =============================== #
+#     Scene Planning Function     #
+# =============================== #
+
+def plan_scene(prompt: str) -> ScenePlan:
+    system_prompt = """You are a manim expert and an excellent teacher who can explain complex
         concepts in a clear and engaging way.
         You'll be working with a manim developer who will write a manim script
         to render a video that explains the concept.
@@ -59,34 +83,28 @@ def plan_scene(prompt:str):
         - Specify the transitions between scenes
         - When specifying colors, you MUST ONLY use standard Manim color constants like:
         BLUE, RED, GREEN, YELLOW, PURPLE, ORANGE, PINK, WHITE, BLACK, GRAY, GOLD, TEAL
-
-    """
-    chat_prompt = ChatPromptTemplate([
-        ('system' , system_prompt),
-        ("human" ,"Plan the scene for the following topic: {topic}")
+"""
+    
+    chat_prompt = ChatPromptTemplate.from_messages([
+        ("system", system_prompt),
+        ("human", "Plan the scene for the following topic: {topic}")
     ])
 
-    model = ChatGoogleGenerativeAI(
-        model="gemini-2.0-flash", 
-        temperature=0.8
+    model = ChatOpenAI(
+        model="llama3-70b-8192",
+        openai_api_base="https://api.groq.com/openai/v1",
+        openai_api_key=os.getenv("GROQ_API_KEY")
     )
-    model = model.with_structured_output(ScenePlan)
+    parser = PydanticOutputParser(pydantic_object=ScenePlan)
+    chain = chat_prompt | model | parser
+    return chain.invoke({"topic": prompt})
 
-    chain = chat_prompt | model
-    
-    response = chain.invoke({"topic" : prompt})
+# =============================== #
+#    Code Generation Function     #
+# =============================== #
 
-    return response
-
-class ManimCodeResponse(BaseModel):
-    code:str = Field(description="Complete valid Python code for the animation")
-    explanation: Optional[str] = Field(None, description="Explanation of the code")
-    error_fixes: Optional[List[str]] = Field(None, description="Error fixes if any")
-
-def generate_code(plan:str, scene_class_name:str) -> ManimCodeResponse:
-    """Generate a manim code from the plan"""
-    system_prompt = f"""
-You are a Python expert and a professional Manim animation developer.
+def generate_code(plan: str, scene_class_name: str) -> ManimCodeResponse:
+    system_prompt = f"""You are a Python expert and a professional Manim animation developer.
 
 You will be given a detailed multi-scene visualization plan that includes:
 - Scene titles and layout
@@ -127,103 +145,49 @@ Your task is to convert the described scenes into Python code using the Manim li
 
 OUTPUT: A single Python file, with one class and all scenes, ready to run in Manim.
 
-    """
+  """
 
     chat_prompt = ChatPromptTemplate.from_messages([
         ("system", system_prompt),
         ("human", "Generate Manim code from this animation plan:\n\n{plan}")
     ])
-    messages = chat_prompt.format_messages(plan=plan)
 
-    model = ChatGoogleGenerativeAI(
-        model="gemini-2.0-flash", 
-        temperature=0.8
+    model = ChatOpenAI(
+        model="llama3-70b-8192",
+        openai_api_base="https://api.groq.com/openai/v1",
+        openai_api_key=os.getenv("GROQ_API_KEY")
     )
-    model = model.with_structured_output(ManimCodeResponse) 
+    parser = PydanticOutputParser(pydantic_object=ManimCodeResponse)
+    chain = chat_prompt | model | parser
+    return chain.invoke({})
 
-    response = model.invoke(messages)
-
-    return response
-
-import os
-import time
-import glob
-import subprocess
-from typing import Optional
-from pydantic import BaseModel, Field
-
-class ManimExecutionResponse(BaseModel):
-    output: str = Field(description="Output of the execution")
-    error: Optional[str] = Field(None, description="Error message")
-    video_path : Optional[str] = Field(None , description="Path of the file")
+# =============================== #
+#     Manim Execution Function    #
+# =============================== #
 
 def execute_manim_code(code: str, scene_class_name: str) -> ManimExecutionResponse:
-    # Save code to a .py file
     file_path = f"{scene_class_name}.py"
     with open(file_path, "w", encoding="utf-8") as f:
         f.write(code)
 
-    print(f" Saved code to: {os.path.abspath(file_path)}")
-    print(f" Starting Manim rendering...")
-
-    # Build manim command
-    cmd = [
-        "python", "-m", "manim",
-        "-pql",  # Preview mode, low quality
-        file_path,
-        scene_class_name
-    ]
-
-    # Run subprocess with correct encoding
+    cmd = ["python", "-m", "manim", "-pql", file_path, scene_class_name]
     start_time = time.time()
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        encoding='utf-8',
-        errors='replace'  # Prevent UnicodeDecodeError
-    )
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace')
     duration = time.time() - start_time
 
-    # Check result
     if result.returncode == 0:
-        print(f" Animation completed successfully in {duration:.1f} seconds!")
-
-        # Locate output video
         video_files = glob.glob(f"media/videos/{scene_class_name}/480p15/*.mp4", recursive=True)
-        if video_files:
-            video_path = max(video_files, key=os.path.getctime)
-            print(f"📽️ Video saved to: {os.path.abspath(video_path)}")
-            print("🎬 Playing animation:")
-        else:
-            print(" Render completed but no video file was found.")
-        return ManimExecutionResponse(output=result.stdout , video_path=os.path.abspath(video_path))
+        video_path = max(video_files, key=os.path.getctime) if video_files else None
+        return ManimExecutionResponse(output=result.stdout, video_path=os.path.abspath(video_path))
     else:
-        print(" Animation failed to render.")
-        print("\n--- Stdout ---\n", result.stdout)
-        print("\n--- Stderr ---\n", result.stderr)
         return ManimExecutionResponse(output=result.stdout, error=result.stderr)
 
-class ManimErrorCorrectionResponse(BaseModel): 
-    fixed_code: str = Field(...,description="The corrected Manim code that should resolve the errors")
-    explanation: str = Field(description="Explanation of what was fixed and why")
-    changes_made: List[str] = Field(description="List of specific changes made to fix the code")
+# =============================== #
+#     Error Correction Function   #
+# =============================== #
 
-
-def correct_manim_errors(code: str,error_message: str):
-    """
-    Analyze Manim errors and generate fixed code.
-
-    Args:
-        code: Original Manim code that produced errors
-        error_message: Error output from the Manim execution
-        scene_class_name: Name of the scene class
-
-    Returns:
-        ManimErrorCorrectionResponse with fixed code and explanation
-    """
-    system_prompt = """
-    You are an expert Manim developer and debugger. Your task is to fix errors in Manim code.
+def correct_manim_errors(code: str, error_message: str) -> ManimErrorCorrectionResponse:
+    system_prompt = """ You are an expert Manim developer and debugger. Your task is to fix errors in Manim code.
 
     ANALYZE the error message carefully to identify the root cause of the problem.
     EXAMINE the code to find where the error occurs.
@@ -246,85 +210,66 @@ def correct_manim_errors(code: str,error_message: str):
     Your response must include:
     1. The complete fixed code
     2. A clear explanation of what was wrong and how you fixed it
-    3. A list of specific changes you made
-    """
+    3. A list of specific changes you made"""
 
     chat_prompt = ChatPromptTemplate.from_messages([
         ("system", system_prompt),
-        ("human", """Please fix the errors in this Manim code.
+        ("human", f"""Please fix the errors in this Manim code.
+        
+        CODE WITH ERRORS:
+        ```python
+        {code}
+        ```
 
-
-            CODE WITH ERRORS:
-            ```python
-            {code}
-            ```
-
-            ERROR MESSAGE:
-            ```
-            {error_message}
-            ```
-            Please provide a complete fixed version of the code, along with an explanation of what went wrong and how you fixed it.
-            """
-        )
+        ERROR MESSAGE:
+        ```
+        {error_message}
+        ```
+        """)
     ])
-    messages = chat_prompt.format_messages(code = code , error_message = error_message)
 
-    model = ChatGoogleGenerativeAI(
-        model="gemini-2.0-flash", 
-        temperature=0.8
+    model = ChatOpenAI(
+        model="llama3-70b-8192",
+        openai_api_base="https://api.groq.com/openai/v1",
+        openai_api_key=os.getenv("GROQ_API_KEY")
     )
-    model = model.with_structured_output(ManimErrorCorrectionResponse) 
+    parser = PydanticOutputParser(pydantic_object=ManimErrorCorrectionResponse)
+    chain = chat_prompt | model | parser
+    return chain.invoke({})
 
-    response = model.invoke(messages)
-
-    return response
-
+# =============================== #
+#  Main Flow with Auto-Correction #
+# =============================== #
 
 def generate_and_execute_with_correction(prompt: str, max_correction_attempts: int = 3):
     storyboard_response = plan_scene(prompt)
     scene_class_name = storyboard_response.scene_class_name
-    print(f" Scene planning complete: {scene_class_name}")
+    print(f"[✓] Scene planned: {scene_class_name}")
 
-    # Step 2: Generate the code
     generated_code = generate_code(storyboard_response.scene, scene_class_name)
     current_code = generated_code.code
-    print(" Initial code generation complete")
 
-    # Step 3: Execute with correction loop
     for attempt in range(max_correction_attempts + 1):
-        if attempt > 0:
-            print(f"\n Correction attempt {attempt}/{max_correction_attempts}...")
-
-        # Execute current code
+        print(f"\n[Attempt {attempt}] Executing code...")
         result = execute_manim_code(current_code, scene_class_name)
 
-        # Check if execution succeeded
-        if not result.error or "Animation completed successfully" in result.output:
-            print(" Animation executed successfully!")
+        if not result.error:
+            print(f"[✓] Success! Video path: {result.video_path}")
             break
 
-        # If we've reached max attempts, exit
         if attempt >= max_correction_attempts:
-            print(f" Failed to fix errors after {max_correction_attempts} attempts.")
+            print("[X] Max correction attempts reached.")
             break
 
-        # Try to fix the errors
-        print("Errors detected, attempting to fix...")
+        print("[!] Error detected. Attempting to fix...")
         correction = correct_manim_errors(current_code, result.error)
-
-        # Update the code for next attempt
-        if correction == None:
-            return None
-        
         current_code = correction.fixed_code
 
-    # Return results
     return {
         "scene_class_name": scene_class_name,
         "final_code": current_code,
         "plan": storyboard_response.scene,
         "execution_result": result,
         "correction_attempts": attempt,
-        "video_path" : result.video_path
+        "video_path": result.video_path
     }
-
