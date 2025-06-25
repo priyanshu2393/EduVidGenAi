@@ -102,11 +102,30 @@ frontend/
 ```
 
 ---
+## 📸 Screenshots
 
+Below are some screenshots to illustrate the main features and UI of EduVidGenAi:
+
+### 1. Home Page
+![Home Page](Backend/assests/HomePage.png)
+
+### 2. Dashboard Page
+![Dashboard Page](Backend/assests/Dashboard.png)
+
+### 3. Generate Video Page
+![Generate Video Page](Backend/assests/Generate_video.png)
+
+### 4. Error Correction Loop
+![Error Correction Loop](Backend/assests/ErrorCorrection.png).
+
+## 🎬 Working Demo Video
+
+- [Sample Video ](https://drive.google.com/file/d/1Gak8u-kScXTM6XxdXa98f5JmskdfpFP4/view?usp=sharing)
+
+  
 ## ⚙️ Configuration
 
 - **Supabase:** Set your Supabase credentials in the backend config/environment.
-- **Database:** Configure your SQL database for user/video metadata.
 
 ## 🙏 Acknowledgments
 
